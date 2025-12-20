@@ -1,6 +1,5 @@
-# Web-Based Advanced Port Scanner
-# Uses Flask (simple Python web framework)
-# Run this file, then open http://127.0.0.1:5000 in your browser
+# Web-Based Advanced Port Scanner with Domain Name Support (Like Nmap!)
+# Now accepts IP or website/domain name
 
 from flask import Flask, render_template_string, request
 import socket
@@ -10,7 +9,7 @@ import queue
 
 app = Flask(__name__)
 
-# === All the scanning code from before (ports, services, threats) ===
+# === Port & Service Data ===
 common_ports = [22, 80, 443, 3389, 445, 21, 23, 25, 53, 110, 135, 137, 138, 139, 143, 161, 162, 389, 3306, 5432, 5900, 8080, 8443, 9200]
 
 port_services = {
@@ -48,7 +47,7 @@ def grab_banner(ip, port):
         pass
     return "No banner grabbed"
 
-def scan_target(ip, port_range):
+def scan_target(target_ip, port_range):
     ports_to_scan = {
         "common": common_ports,
         "1-1024": list(range(1, 1025)),
@@ -66,16 +65,17 @@ def scan_target(ip, port_range):
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(1)
-                if sock.connect_ex((ip, port)) == 0:
+                if sock.connect_ex((target_ip, port)) == 0:
                     service = port_services.get(port, "Unknown")
-                    banner = grab_banner(ip, port)
+                    banner = grab_banner(target_ip, port)
                     results.append((port, service, banner))
                 sock.close()
             except:
                 pass
             q.task_done()
 
-    for _ in range(50):
+    thread_count = 50
+    for _ in range(thread_count):
         t = threading.Thread(target=worker)
         t.daemon = True
         t.start()
@@ -84,15 +84,29 @@ def scan_target(ip, port_range):
     results.sort(key=lambda x: x[0])
     return results
 
-# === Web Pages ===
+# === Resolve Domain to IP ===
+def resolve_target(target):
+    target = target.strip()
+    try:
+        # First, check if it's already a valid IP
+        socket.inet_aton(target)
+        return target, target  # (resolved_ip, original_input)
+    except:
+        # Not an IP → try to resolve as domain
+        try:
+            resolved_ip = socket.gethostbyname(target)
+            return resolved_ip, target
+        except socket.gaierror:
+            return None, target
 
+# === Web Interface ===
 HTML_TEMPLATE = '''
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Web Port Scanner</title>
+    <title>Web Port Scanner (Nmap Style)</title>
     <style>
         body { font-family: Arial, sans-serif; max-width: 900px; margin: 40px auto; padding: 20px; background: #f4f4f9; }
         h1 { color: #333; text-align: center; }
@@ -105,18 +119,19 @@ HTML_TEMPLATE = '''
         .result { margin-top: 30px; padding: 20px; background: white; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
         .open { color: green; font-weight: bold; }
         .threat { background: #fff3cd; padding: 10px; border-radius: 5px; margin: 10px 0; }
+        .info { background: #d1ecf1; padding: 10px; border-radius: 5px; margin: 10px 0; }
     </style>
 </head>
 <body>
-    <h1>🛡️ Advanced Web Port Scanner</h1>
+    <h1>🛡️ Nmap-Style Web Port Scanner</h1>
     <div class="warning">
-        ⚠️ ONLY scan devices you own or have explicit permission to scan!<br>
-        Unauthorized scanning is illegal.
+        ⚠️ ONLY scan systems you own or have explicit permission to scan!<br>
+        Examples: 127.0.0.1, scanme.nmap.org, google.com
     </div>
 
     <form method="post">
-        <label>Target IP Address:</label>
-        <input type="text" name="ip" placeholder="e.g., 127.0.0.1" required value="{{ ip }}">
+        <label>Target (IP or Website/Domain):</label>
+        <input type="text" name="target" placeholder="e.g., 127.0.0.1 or google.com" required value="{{ original_target }}">
 
         <label>Port Range:</label>
         <select name="range">
@@ -130,9 +145,19 @@ HTML_TEMPLATE = '''
 
     {% if results is not none %}
     <div class="result">
-        <h2>Scan Results for {{ ip }} ({{ scan_time }})</h2>
+        <h2>Scan Results</h2>
+        
+        {% if resolved_ip %}
+            <div class="info">
+                <strong>Target Entered:</strong> {{ original_target }}<br>
+                <strong>Resolved IP:</strong> {{ resolved_ip }}
+            </div>
+        {% else %}
+            <div class="warning">⚠️ Could not resolve "{{ original_target }}" to an IP address.</div>
+        {% endif %}
+
         {% if results %}
-            <p>Found <strong>{{ results|length }}</strong> open port(s):</p>
+            <p>Found <strong>{{ results|length }}</strong> open port(s) on {{ resolved_ip }}:</p>
             {% for port, service, banner in results %}
                 <div style="border: 1px solid #ddd; padding: 15px; margin: 10px 0; border-radius: 8px;">
                     <p><span class="open">Port {{ port }}/TCP OPEN</span> - Service: <strong>{{ service }}</strong></p>
@@ -145,7 +170,9 @@ HTML_TEMPLATE = '''
                 </div>
             {% endfor %}
         {% else %}
-            <p>No open ports found. Target may be offline or heavily firewalled.</p>
+            {% if resolved_ip %}
+                <p>No open ports found. The target may be offline or protected by a firewall.</p>
+            {% endif %}
         {% endif %}
     </div>
     {% endif %}
@@ -156,26 +183,31 @@ HTML_TEMPLATE = '''
 @app.route('/', methods=['GET', 'POST'])
 def index():
     results = None
-    ip = ""
-    scan_time = ""
+    original_target = ""
+    resolved_ip = None
 
     if request.method == 'POST':
-        ip = request.form['ip'].strip()
+        original_target = request.form['target'].strip()
         port_range = request.form['range']
 
-        # Basic input validation
-        try:
-            socket.inet_aton(ip)  # Validates IP format
-            start_time = datetime.now()
-            results = scan_target(ip, port_range)
-            scan_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        except:
-            results = []
-            scan_time = "Invalid IP address!"
+        # Resolve target to IP
+        resolved_ip, _ = resolve_target(original_target)
 
-    return render_template_string(HTML_TEMPLATE, results=results, ip=ip, scan_time=scan_time, port_threats=port_threats)
+        if resolved_ip:
+            start_time = datetime.now()
+            results = scan_target(resolved_ip, port_range)
+        else:
+            results = []  # Trigger error display
+
+    return render_template_string(
+        HTML_TEMPLATE,
+        results=results,
+        original_target=original_target,
+        resolved_ip=resolved_ip,
+        port_threats=port_threats
+    )
 
 if __name__ == '__main__':
-    print("🚀 Web Port Scanner starting...")
-    print("Open your browser and go to: http://127.0.0.1:5000")
+    print("🚀 Nmap-Style Web Port Scanner starting...")
+    print("Open your browser: http://127.0.0.1:5000")
     app.run(host='127.0.0.1', port=5000, debug=False)
