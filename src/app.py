@@ -1,3 +1,5 @@
+from datetime import datetime
+import importlib.util
 from flask import Flask, render_template, request, jsonify, redirect, url_for
 from flask_socketio import SocketIO, emit
 from core.scanner import resolve_target, scan_target, check_subdomain
@@ -15,6 +17,11 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 # Let's put it in the root (one level up from src)
 HISTORY_FILE = os.path.join(os.path.dirname(BASE_DIR), "scan_history.json")
+
+
+@app.context_processor
+def inject_current_year():
+    return {"current_year": datetime.now().year}
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
