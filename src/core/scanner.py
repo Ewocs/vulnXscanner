@@ -1,6 +1,7 @@
 import socket
 import threading
 import queue
+import re
 from datetime import datetime
 
 common_ports = [21, 22, 23, 25, 53, 80, 110, 135, 137, 138, 139, 143, 161, 389, 443, 445, 3306, 3389, 5432, 5900, 8080, 8443, 9200]
@@ -26,9 +27,44 @@ port_threats = {
 
 severity_map = {23: "Critical", 21: "High", 445: "High", 3389: "High", 22: "Medium", 80: "Medium", 443: "Low", 3306:"Critical"}
 
-def grab_banner(ip, port):
+def is_ipv6(address):
+    """Check if an address is IPv6 format"""
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        socket.inet_pton(socket.AF_INET6, address)
+        return True
+    except (socket.error, OSError, AttributeError):
+        # Fallback regex check for IPv6
+        ipv6_pattern = r'^([0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}$|^::1$|^::$'
+        if re.match(ipv6_pattern, address):
+            return True
+        return False
+
+def is_ipv4(address):
+    """Check if an address is IPv4 format"""
+    try:
+        socket.inet_aton(address)
+        return True
+    except socket.error:
+        return False
+
+def get_address_family(address):
+    """Determine the socket address family for an IP address"""
+    if is_ipv6(address):
+        return socket.AF_INET6
+    elif is_ipv4(address):
+        return socket.AF_INET
+    else:
+        return None
+
+def grab_banner(ip, port, address_family=None):
+    """Grab banner from a port, supporting both IPv4 and IPv6"""
+    if address_family is None:
+        address_family = get_address_family(ip)
+        if address_family is None:
+            return "No banner response"
+    
+    try:
+        sock = socket.socket(address_family, socket.SOCK_STREAM)
         sock.settimeout(2)
         sock.connect((ip, port))
         banner = ""
@@ -38,7 +74,9 @@ def grab_banner(ip, port):
         except: pass
         if port in [80, 443, 8080, 8443]:
             try:
-                sock.send(b"GET / HTTP/1.1\r\nHost: " + ip.encode() + b"\r\n\r\n")
+                # For IPv6, use bracket notation in Host header
+                host_header = f"[{ip}]" if address_family == socket.AF_INET6 else ip
+                sock.send(b"GET / HTTP/1.1\r\nHost: " + host_header.encode() + b"\r\n\r\n")
                 response = sock.recv(1024)
                 if response:
                     decoded = response.decode('utf-8', errors='ignore').split('\r\n')[0]
@@ -49,6 +87,12 @@ def grab_banner(ip, port):
     except: return "No banner response"
 
 def scan_target(target_ip, deep_scan, callback=None):
+    """Scan target IP (IPv4 or IPv6) for open ports"""
+    # Determine address family
+    address_family = get_address_family(target_ip)
+    if address_family is None:
+        raise ValueError(f"Invalid IP address format: {target_ip}")
+    
     ports = list(range(1, 1025)) if deep_scan else common_ports
     results = []
     q = queue.Queue()
@@ -63,11 +107,11 @@ def scan_target(target_ip, deep_scan, callback=None):
         while not q.empty():
             port = q.get()
             try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock = socket.socket(address_family, socket.SOCK_STREAM)
                 sock.settimeout(1)
                 if sock.connect_ex((target_ip, port)) == 0:
                     service = port_services.get(port, "Unknown")
-                    banner = grab_banner(target_ip, port)
+                    banner = grab_banner(target_ip, port, address_family)
                     severity = severity_map.get(port, "Low")
                     threat = port_threats.get(port, "General exposure risk detected.")
                     res = (port, service, banner, severity, threat)
@@ -98,11 +142,34 @@ def scan_target(target_ip, deep_scan, callback=None):
     }
 
 def resolve_target(target):
+    """Resolve target to IP address, supporting both IPv4 and IPv6"""
     target = target.strip().replace("http://", "").replace("https://", "").split("/")[0]
+    
+    # Remove brackets from IPv6 addresses if present (e.g., [2001:db8::1])
+    if target.startswith('[') and target.endswith(']'):
+        target = target[1:-1]
+    
+    # Check if it's already an IP address
+    if is_ipv4(target) or is_ipv6(target):
+        return target, target
+    
+    # Try to resolve as hostname - prefer IPv4 first, then IPv6
     try:
+        # Try IPv4 first
         ip = socket.gethostbyname(target)
         return ip, target
-    except: return None, target
+    except socket.gaierror:
+        # If IPv4 fails, try IPv6
+        try:
+            # Get IPv6 address using getaddrinfo
+            addrinfo = socket.getaddrinfo(target, None, socket.AF_INET6, socket.SOCK_STREAM)
+            if addrinfo:
+                ip = addrinfo[0][4][0]
+                return ip, target
+        except (socket.gaierror, OSError):
+            pass
+    
+    return None, target
 
 def check_subdomain(domain, sub):
     try:

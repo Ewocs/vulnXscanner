@@ -10,7 +10,7 @@
 <div class="search-container">
     <form method="post" onsubmit="startScan(event)">
         <div class="input-group">
-            <input type="text" name="target" id="targetInput" placeholder="Enter IP or Hostname (e.g. scanme.nmap.org)"
+            <input type="text" name="target" id="targetInput" placeholder="Enter IP (IPv4/IPv6) or Hostname (e.g. scanme.nmap.org, 2001:db8::1)"
                 required value="{{ original_target }}">
             <button type="submit" class="btn-primary" id="analyzeBtn">
                 Analyze Target
