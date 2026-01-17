@@ -182,4 +182,4 @@ if __name__ == '__main__':
     print("🚀 VulnX Professional Edition starting...")
     print(f"📍 History file location: {HISTORY_FILE}")
     print("📍 URL: http://127.0.0.1:5000")
-    socketio.run(app, host='127.0.0.1', port=5000, debug=True)
+    socketio.run(app, host='127.0.0.1', port=5000, debug=True, allow_unsafe_werkzeug=True)
